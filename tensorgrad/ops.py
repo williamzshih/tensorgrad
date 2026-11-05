@@ -118,7 +118,7 @@ def relu(a):
     return Tensor._make(np.maximum(a.data, 0), (a,), lambda g: (g * (a.data > 0),), "relu")
 
 
-_GELU_C = np.sqrt(2 / np.pi)
+_GELU_C = float(np.sqrt(2 / np.pi))  # Python float: keeps float32 as float32
 
 
 def gelu(a):

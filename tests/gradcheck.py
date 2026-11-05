@@ -44,3 +44,13 @@ def gradcheck(fn, arrays, rtol=1e-5, atol=1e-7, seed=0):
         assert t.grad is not None, f"input {k} got no gradient"
         np.testing.assert_allclose(t.grad, num, rtol=rtol, atol=atol,
                                    err_msg=f"gradient mismatch for input {k}")
+
+
+def gradcheck_module(module, loss_fn, rtol=1e-5, atol=1e-7, eps=1e-6):
+    """Gradcheck every parameter of `module` for the scalar loss_fn()."""
+    module.zero_grad()
+    loss_fn().backward()
+    for name, p in module.named_parameters():
+        num = numerical_grads(lambda _: loss_fn().item(), [p.data], eps)[0]
+        np.testing.assert_allclose(p.grad, num, rtol=rtol, atol=atol,
+                                   err_msg=f"gradient mismatch for {name}")
