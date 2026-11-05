@@ -238,3 +238,73 @@ def where(cond, a, b):
                         lambda g: (unbroadcast(np.where(cond, g, 0).astype(g.dtype), a.shape),
                                    unbroadcast(np.where(cond, 0, g).astype(g.dtype), b.shape)),
                         "where")
+
+
+# --- fused, numerically stable ops (hand-derived backward) -------------------
+def softmax(a, axis=-1):
+    """exp(x - max) / sum(exp(x - max)). Subtracting the max avoids overflow
+    and does not change the result."""
+    e = np.exp(a.data - a.data.max(axis=axis, keepdims=True))
+    s = e / e.sum(axis=axis, keepdims=True)
+    # dL/dx = s * (g - sum(g * s))
+    return Tensor._make(s, (a,),
+                        lambda g: (s * (g - (g * s).sum(axis=axis, keepdims=True)),),
+                        "softmax")
+
+
+def log_softmax(a, axis=-1):
+    """x - max - log(sum(exp(x - max)))."""
+    shifted = a.data - a.data.max(axis=axis, keepdims=True)
+    out = shifted - np.log(np.exp(shifted).sum(axis=axis, keepdims=True))
+    s = np.exp(out)
+    # dL/dx = g - softmax(x) * sum(g)
+    return Tensor._make(out, (a,),
+                        lambda g: (g - s * g.sum(axis=axis, keepdims=True),),
+                        "log_softmax")
+
+
+def cross_entropy(logits, targets):
+    """Mean negative log-likelihood of integer `targets` under softmax(logits).
+
+    logits: (..., C) Tensor;  targets: integer array of shape (...).
+    Fused backward: dL/dlogits = (softmax(logits) - one_hot(targets)) / N.
+    """
+    targets = np.asarray(targets.data if isinstance(targets, Tensor) else targets)
+    C = logits.shape[-1]
+    z = logits.data.reshape(-1, C)
+    t = targets.reshape(-1).astype(np.int64)
+    N = z.shape[0]
+    shifted = z - z.max(axis=1, keepdims=True)
+    logp = shifted - np.log(np.exp(shifted).sum(axis=1, keepdims=True))
+    loss = -logp[np.arange(N), t].mean()
+
+    def backward(g):
+        d = np.exp(logp)
+        d[np.arange(N), t] -= 1
+        return ((d * (g / N)).reshape(logits.shape),)
+
+    return Tensor._make(np.asarray(loss, dtype=logits.dtype), (logits,), backward,
+                        "cross_entropy")
+
+
+def layer_norm(x, weight, bias, eps=1e-5):
+    """Normalize over the last axis, then scale and shift:
+    y = (x - mean) / sqrt(var + eps) * weight + bias   (biased variance)."""
+    D = x.shape[-1]
+    mu = x.data.mean(axis=-1, keepdims=True)
+    xc = x.data - mu
+    rstd = 1.0 / np.sqrt((xc * xc).mean(axis=-1, keepdims=True) + eps)
+    xhat = xc * rstd
+    out = xhat * weight.data + bias.data
+
+    def backward(g):
+        lead = tuple(range(g.ndim - 1))
+        dweight = (g * xhat).sum(axis=lead)
+        dbias = g.sum(axis=lead)
+        dxhat = g * weight.data
+        # dx = rstd/D * (D*dxhat - sum(dxhat) - xhat*sum(dxhat*xhat))
+        dx = rstd / D * (D * dxhat - dxhat.sum(axis=-1, keepdims=True)
+                         - xhat * (dxhat * xhat).sum(axis=-1, keepdims=True))
+        return dx, dweight, dbias
+
+    return Tensor._make(out, (x, weight, bias), backward, "layer_norm")
