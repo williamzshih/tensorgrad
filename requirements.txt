@@ -1,0 +1,5 @@
+numpy>=1.24
+# dev / tooling (not needed by the library itself)
+pytest
+matplotlib   # plot.py only
+# torch      # optional: enables the torch-parity tests
