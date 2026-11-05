@@ -125,7 +125,7 @@ def gelu(a):
     """GELU, tanh approximation (as in GPT-2):
     0.5 x (1 + tanh(c (x + 0.044715 x^3))),  c = sqrt(2/pi)."""
     x = a.data
-    t = np.tanh(_GELU_C * (x + 0.044715 * x**3))
+    t = np.tanh(_GELU_C * (x + 0.044715 * (x * x * x)))  # x*x*x: much faster than x**3
     out = 0.5 * x * (1 + t)
 
     def backward(g):
@@ -201,10 +201,15 @@ def getitem(a, idx):
     np.add.at, which accumulates instead of overwriting."""
     if isinstance(idx, Tensor):
         idx = idx.data.astype(np.int64)
+    parts = idx if isinstance(idx, tuple) else (idx,)
+    basic = all(isinstance(i, (int, slice, type(None), type(Ellipsis))) for i in parts)
 
     def backward(g):
         grad = np.zeros_like(a.data)
-        np.add.at(grad, idx, g)
+        if basic:  # plain slicing selects each element at most once
+            grad[idx] = g
+        else:
+            np.add.at(grad, idx, g)
         return (grad,)
 
     return Tensor._make(a.data[idx], (a,), backward, "getitem")
